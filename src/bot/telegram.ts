@@ -2,6 +2,7 @@ import { Bot } from 'grammy';
 import { config } from '../config.js';
 import { processUserMessage } from '../agent/loop.js';
 import { clearHistory } from '../db/memory.js';
+import { transcribeTelegramVoice } from '../ai/transcriber.js';
 
 if (!config.TELEGRAM_BOT_TOKEN || config.TELEGRAM_BOT_TOKEN === 'SUTITUYE POR EL TUYO') {
     console.error("[Telegram] El token del bot no está configurado correctamente.");
@@ -52,5 +53,43 @@ bot.on("message:text", async (ctx) => {
     } catch (error: any) {
         console.error("[Bot Error]", error);
         await ctx.reply(`Ocurrió un error en el sistema: ${error.message}`);
+    }
+});
+
+bot.on(["message:voice", "message:audio"], async (ctx) => {
+    const userId = ctx.from!.id.toString();
+    const fileId = ctx.message.voice?.file_id || ctx.message.audio?.file_id;
+
+    if (!fileId) return;
+
+    try {
+        await ctx.replyWithChatAction("typing");
+        const statusMsg = await ctx.reply("🎵 _Descargando y escuchando tu nota de voz..._", { parse_mode: "Markdown" });
+
+        const transcribedText = await transcribeTelegramVoice(fileId);
+
+        // Eliminamos el mensaje de estado
+        await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => { });
+
+        if (!transcribedText || transcribedText.length === 0) {
+            await ctx.reply("No pude detectar qué dijiste en el audio.");
+            return;
+        }
+
+        // Mostrar lo que se entendió
+        await ctx.reply(`🎤 *Lo que escuché:*\n_"${transcribedText}"_`, { parse_mode: "Markdown" });
+
+        // Enviar el texto transcrito al agente
+        await ctx.replyWithChatAction("typing");
+        const responseText = await processUserMessage(userId, transcribedText);
+
+        await ctx.reply(responseText, { parse_mode: "Markdown" }).catch(async (e) => {
+            console.error("[Telegram] Error parseando Markdown", e);
+            await ctx.reply(responseText);
+        });
+
+    } catch (error: any) {
+        console.error("[Audio Error]", error);
+        await ctx.reply(`Ocurrió un error procesando el audio: ${error.message}`);
     }
 });
